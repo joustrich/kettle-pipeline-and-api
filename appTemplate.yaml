@@ -1,0 +1,426 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Kettle Pipeline and APIs
+Parameters:
+  Version:
+    Type: String
+  EnvName:
+    Type: String
+    Default: dev
+  AppName:
+    Type: String
+    Default: kettle-pipeline-and-api
+Resources:
+  KettlePipelineApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowMethods: "'GET,OPTIONS,PATCH,PUT,DELETE'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+        AllowOrigin:
+          Fn::Join:
+            - ""
+            -
+              - "'"
+              - !FindInMap [EnvMap, !Ref EnvName, corsDomain]
+              - "'"
+      DefinitionBody:
+        swagger: 2.0
+        info:
+          title: !Ref "AWS::StackName"
+          description: API to support CSV to DynamoDB data pipeline
+        schemes:
+          - "https"
+        consumes:
+          - "application/json"
+        produces:
+          - "application/json"
+        x-amazon-apigateway-request-validators:
+          bodyAndParameters:
+            validateRequestParameters: true
+            validateRequestBody: true
+          body:
+            validateRequestParameters: false
+            validateRequestBody: true
+          parameters:
+            validateRequestParameters: true
+            validateRequestBody: false
+        x-amazon-apigateway-gateway-responses:
+          DEFAULT_4XX:
+            responseParameters:
+              gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+              gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST,PATCH,DELETE,PUT'"
+              gatewayresponse.header.Access-Control-Allow-Origin:
+                Fn::Join:
+                  - ""
+                  -
+                    - "'"
+                    - Fn::FindInMap: [EnvMap, !Ref EnvName, corsDomain]
+                    - "'"
+          DEFAULT_5XX:
+            responseParameters:
+              gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+              gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST,PATCH,DELETE,PUT'"
+              gatewayresponse.header.Access-Control-Allow-Origin:
+                Fn::Join:
+                  - ""
+                  -
+                    - "'"
+                    - Fn::FindInMap: [EnvMap, !Ref EnvName, corsDomain]
+                    - "'"
+        paths:
+          /clients:
+            get:
+              x-amazon-apigateway-request-validator: parameters
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              summary: "Get a list of all clients"
+              security:
+                - ApiKey: []
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetClients.Arn}/invocations
+                responses:
+                  "200":
+                    statusCode: "200"
+              responses:
+                "200":
+                  description: "successful operation"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Origin:
+                      type: "string"
+          /clients/{clientId}/jobs:
+            get:
+              x-amazon-apigateway-request-validator: parameters
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              parameters:
+                - in: "path"
+                  name: "clientId"
+                  description: "ID of the client to generate a signed PUT url for"
+                  required: true
+              summary: "Get a list of all jobs for this client"
+              security:
+                - ApiKey: []
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetJobsForClient.Arn}/invocations
+                responses:
+                  "200":
+                    statusCode: "200"
+              responses:
+                "200":
+                  description: "successful operation"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Origin:
+                      type: "string"
+          /clients/{clientId}/signedCsvUploadUrl:
+            post:
+              x-amazon-apigateway-request-validator: parameters
+              consumes:
+                - "application/json"
+              produces:
+                - "application/json"
+              parameters:
+                - in: "path"
+                  name: "clientId"
+                  description: "ID of the client to generate a signed PUT url for"
+                  required: true
+              summary: "Generate signed S3 upload URL to upload CSV file to"
+              security:
+                - ApiKey: []
+              x-amazon-apigateway-integration:
+                httpMethod: POST
+                type: aws_proxy
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CsvUploadUrl.Arn}/invocations
+                responses:
+                  "200":
+                    statusCode: "200"
+              responses:
+                "200":
+                  description: "successful operation"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: "string"
+                    Access-Control-Allow-Methods:
+                      type: "string"
+                    Access-Control-Allow-Origin:
+                      type: "string"
+        # API key so that the API gateway isn't totally open. Would be replaced with custom auth in real world
+        securityDefinitions:
+          ApiKey:
+            type: "apiKey"
+            in: "header"
+            name: "x-api-key"
+
+  KettleApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref KettlePipelineApi
+          StageName: !Ref KettlePipelineApiProdStage
+  KettlePipelineApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId: !Ref KettlePipelineApi
+          Stage: !Ref KettlePipelineApiProdStage
+  KettleUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref KettleApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref KettlePipelineApiUsagePlan
+
+  # S3 Bucket where raw client CSVs are uploaded to
+  RawCsvBucket:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: BucketOwnerFullControl
+      BucketName: !Sub '${EnvName}-joustrich-kettle-raw-csv-bucket'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods:
+              - GET
+              - PUT
+            AllowedOrigins:
+              - !FindInMap [EnvMap, !Ref EnvName, corsDomain]
+
+  # S3 Bucket for batched CSV files
+  BatchCsvBucket:
+    Type: "AWS::S3::Bucket"
+    DeletionPolicy: Retain
+    Properties:
+      AccessControl: BucketOwnerFullControl
+      BucketName: !Sub '${EnvName}-joustrich-kettle-batch-csv-bucket'
+
+  # DynamoDB table to follow single table pattern
+  KettleTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: hashKey
+          AttributeType: S
+        - AttributeName: sortKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: hashKey
+          KeyType: HASH
+        - AttributeName: sortKey
+          KeyType: RANGE
+      BillingMode: PAY_PER_REQUEST
+
+  # Secrets manager secret (mainly for holding geocode API key)
+  KettleSecret:
+    Type: 'AWS::SecretsManager::Secret'
+    Properties:
+      Name: !Sub '${EnvName}-${AppName}-secret'
+      SecretString: '{}'
+
+  # IAM policy attached to the role attached to all lambdas in this service
+  KettlePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action: "secretsmanager:GetSecretValue"
+            Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${EnvName}-${AppName}-*"
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+            Resource:
+              - !Sub 'arn:aws:s3:::${EnvName}-joustrich-kettle-raw-csv-bucket'
+              - !Sub 'arn:aws:s3:::${EnvName}-joustrich-kettle-batch-csv-bucket'
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:PutObjectAcl
+            Resource:
+              - !Sub 'arn:aws:s3:::${EnvName}-joustrich-kettle-raw-csv-bucket/*'
+              - !Sub 'arn:aws:s3:::${EnvName}-joustrich-kettle-batch-csv-bucket/*'
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchWriteItem
+              - dynamodb:DescribeTable
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt KettleTable.Arn
+
+  # IAM role attached to all lambdas in this service
+  KettleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+        - !Ref KettlePolicy
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowLambdaServiceToAssumeRole
+            Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+
+  # Function to take the raw client CSV and batch it into multiple CSVs to ensure we don't hit time/memory limits
+  ValidateAndBatchCsv:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ValidateAndBatchCsv
+      CodeUri: ./dist
+      Handler: handlers/handler.validateAndBatchCsv
+      MemorySize: 256
+      Timeout: 900
+      Runtime: nodejs12.x
+      Tracing: Active
+      Role: !GetAtt KettleRole.Arn
+      Environment:
+        Variables:
+          batchCsvBucket: !Ref BatchCsvBucket
+          batchSize: 100
+          envName: !Sub '${EnvName}'
+          kettleTable: !Ref KettleTable
+      Events:
+        BatchCsvRecordsS3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref RawCsvBucket
+            Events:
+              - s3:ObjectCreated:*
+
+  # Function to process each CSV batch by geocoding when necessary and saving to dynamo
+  ProcessCsv:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-ProcessCsv
+      CodeUri: ./dist
+      Handler: handlers/handler.processCsv
+      MemorySize: 256
+      Timeout: 900
+      Runtime: nodejs12.x
+      Tracing: Active
+      Role: !GetAtt KettleRole.Arn
+      Environment:
+        Variables:
+          envName: !Sub '${EnvName}'
+          kettleTable: !Ref KettleTable
+      Events:
+        BatchCsvRecordsS3Event:
+          Type: S3
+          Properties:
+            Bucket: !Ref BatchCsvBucket
+            Events:
+              - s3:ObjectCreated:*
+
+  # Function to get a list of all Kettle clients from dynamo
+  GetClients:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetClients
+      CodeUri: ./dist
+      Handler: handlers/handler.getClients
+      MemorySize: 128
+      Timeout: 30
+      Runtime: nodejs12.x
+      Tracing: Active
+      Role: !GetAtt KettleRole.Arn
+      Environment:
+        Variables:
+          corsDomain: !FindInMap [EnvMap, !Ref EnvName, corsDomain]
+          envName: !Sub '${EnvName}'
+          kettleTable: !Ref KettleTable
+      Events:
+        GetClientsApi:
+          Type: Api
+          Properties:
+            Path: /clients
+            Method: get
+            RestApiId:
+              Ref: KettlePipelineApi
+
+  # Function to get a list of pipeline jobs for a client
+  GetJobsForClient:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-GetJobsForClient
+      CodeUri: ./dist
+      Handler: handlers/handler.getJobsForClient
+      MemorySize: 128
+      Timeout: 30
+      Runtime: nodejs12.x
+      Tracing: Active
+      Role: !GetAtt KettleRole.Arn
+      Environment:
+        Variables:
+          corsDomain: !FindInMap [EnvMap, !Ref EnvName, corsDomain]
+          envName: !Sub '${EnvName}'
+          kettleTable: !Ref KettleTable
+      Events:
+        GetJobsApi:
+          Type: Api
+          Properties:
+            Path: /clients/{clientId}/jobs
+            Method: get
+            RestApiId:
+              Ref: KettlePipelineApi
+
+  # Function to create a signed S3 PUT url so the client can upload a new CSV to the rawCsv bucket
+  CsvUploadUrl:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-CsvUploadUrl
+      CodeUri: ./dist
+      Handler: handlers/handler.csvUploadUrl
+      MemorySize: 128
+      Timeout: 30
+      Runtime: nodejs12.x
+      Tracing: Active
+      Role: !GetAtt KettleRole.Arn
+      Environment:
+        Variables:
+          corsDomain: !FindInMap [EnvMap, !Ref EnvName, corsDomain]
+          envName: !Sub '${EnvName}'
+          kettleTable: !Ref KettleTable
+          rawCsvBucket: !Ref RawCsvBucket
+      Events:
+        CsvUploadUrlApi:
+          Type: Api
+          Properties:
+            Path: /clients/{clientId}/signedCsvUploadUrl
+            Method: post
+            RestApiId:
+              Ref: KettlePipelineApi
+Mappings:
+  EnvMap:
+    dev:
+      corsDomain: http://localhost:3000

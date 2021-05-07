@@ -1,0 +1,53 @@
+{
+  "name": "kettle-pipeline-and-api",
+  "version": "0.1.0",
+  "description": "CSV to DynamoDB data pipeline and supporting APIs",
+  "private": true,
+  "config": {
+    "template_file": "appTemplate.yaml",
+    "packaged_template_file": "serverless-output.yaml",
+    "s3_bucket": "joustrich-cloudformation",
+    "env_name": "dev",
+    "app_name": "kettle-pipeline-and-api",
+    "version": "$npm_package_version"
+  },
+  "scripts": {
+    "lint": "npm run yaml-lint && npm run lint:eslint",
+    "lint:eslint": "eslint 'src/**/*.js'",
+    "prepackage": "npm install && npm run lint && cp -r src/ dist && cp package.json ./dist/ && npm install --production --prefix ./dist  ",
+    "package": "aws cloudformation package --template-file $npm_package_config_template_file --output-template-file $npm_package_config_packaged_template_file --s3-bucket $npm_package_config_s3_bucket",
+    "postpackage": "rm -rf dist",
+    "predeploy": "npm run package",
+    "deploy": "aws cloudformation deploy --template-file $npm_package_config_packaged_template_file --stack-name $npm_package_config_env_name-$npm_package_config_app_name --parameter-overrides AppName=$npm_package_config_app_name EnvName=$npm_package_config_env_name Version=$npm_package_version --capabilities CAPABILITY_NAMED_IAM",
+    "postdeploy": "rm $npm_package_config_packaged_template_file",
+    "test": "npm run lint && jest",
+    "yaml-lint": "yamllint -d '{extends: relaxed, rules: {line-length: {max: 120}}}' *.yaml"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joustrich/kettle-pipeline-and-api.git"
+  },
+  "devDependencies": {
+    "@jest/types": "^26.6.2",
+    "@tsconfig/node12": "^1.0.7",
+    "@types/aws-lambda": "^8.10.72",
+    "@types/axios": "^0.14.0",
+    "@types/eslint": "^7.2.7",
+    "@types/jest": "^26.0.21",
+    "@types/node": "^14.14.35",
+    "aws-sdk": "^2.871.0",
+    "eslint": "^7.0.0",
+    "eslint-config-prettier": "^8.1.0",
+    "eslint-plugin-jest": "^24.3.2",
+    "eslint-plugin-prettier": "^3.1.3",
+    "jest": "^26.4.2",
+    "jest-extended": "^0.11.5",
+    "prettier": "^2.0.5"
+  },
+  "dependencies": {
+    "aws-xray-sdk-core": "^3.2.0",
+    "axios": "^0.21.1",
+    "fast-csv": "^4.3.6",
+    "ngeohash": "^0.6.3"
+  }
+}
